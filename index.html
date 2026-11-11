@@ -561,6 +561,23 @@ SOFTWARE.
     if(!official&&!estimate)return null;
     return {FCODE:code,SHORTNAME:typeof q.SHORTNAME==='string'?q.SHORTNAME.slice(0,150):'',NAV:official?positive(q.NAV):null,PDATE:official?q.PDATE:null,GSZ:estimate?positive(q.GSZ):null,GSZZL:estimate?toNumber(q.GSZZL):null,GZTIME:estimate?q.GZTIME:null};
   }
+  function normalizeSinaEstimate(data, code, target) {
+    if (!Array.isArray(data?.networth) || !validDate(target)) return null;
+    const referenceDate = typeof data.worth_date === 'string'
+      ? data.worth_date.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')
+      : null;
+    const referenceNav = toNumber(data.worth);
+    if (!validDate(referenceDate) || referenceDate >= target || !(referenceNav > 0)) return null;
+    let latest = null;
+    for (const point of data.networth) {
+      if (point?.symbol !== code || point.pre_date !== target || typeof point.min_time !== 'string') continue;
+      const quote = normalizeQuote({
+        FCODE: code, GSZ: point.pre_nav, GSZZL: point.nav_pct, GZTIME: target + ' ' + point.min_time,
+      }, code);
+      if (quote && (!latest || quote.GZTIME >= latest.GZTIME)) latest = quote;
+    }
+    return latest ? {...latest, referenceDate, referenceNav} : null;
+  }
   function mergeQuote(old,value,at){
     const code=value?.FCODE||old?.FCODE,a=normalizeQuote(old,code),b=normalizeQuote(value,code);if(!a&&!b)return null;
     const result={FCODE:code,SHORTNAME:b?.SHORTNAME||a?.SHORTNAME||'',NAV:null,PDATE:null,GSZ:null,GSZZL:null,GZTIME:null};
@@ -599,13 +616,22 @@ SOFTWARE.
   }
   function sanitizeMarket(raw,codes){
     raw=object(raw)?raw:{};
-    const allowed=new Set(codes||[]),result={quotes:{},history:{},quoteMeta:{},historyMeta:{},fetchedAt:timestamp(raw.fetchedAt)};
+    const allowed=new Set(codes||[]),result={quotes:{},sinaEstimates:{},history:{},quoteMeta:{},historyMeta:{},fetchedAt:timestamp(raw.fetchedAt)};
     for(const code of allowed){
       const q=normalizeQuote(raw.quotes?.[code],code),rows=normalizeHistory(raw.history?.[code]);
       if(q){
         const fallback=timestamp(raw.quoteMeta?.[code]?.fetchedAt)||result.fetchedAt;
         q._officialMeta={cached:true,fetchedAt:timestamp(raw.quotes?.[code]?._officialMeta?.fetchedAt)||fallback};q._estimateMeta={cached:true,fetchedAt:timestamp(raw.quotes?.[code]?._estimateMeta?.fetchedAt)||fallback};
         result.quotes[code]=q;result.quoteMeta[code]={cached:true,fetchedAt:fallback};
+      }
+      const savedEstimate = raw.sinaEstimates?.[code];
+      const estimate = normalizeQuote(savedEstimate, code);
+      const referenceNav = toNumber(savedEstimate?.referenceNav);
+      if (estimate?.GSZ && validDate(savedEstimate.referenceDate) && referenceNav > 0) {
+        result.sinaEstimates[code] = {
+          ...estimate, referenceDate: savedEstimate.referenceDate, referenceNav,
+          cached: true, fetchedAt: timestamp(savedEstimate.fetchedAt) || result.fetchedAt,
+        };
       }
       if(rows.length){const fallback=timestamp(raw.historyMeta?.[code]?.fetchedAt)||result.fetchedAt;result.history[code]=rows.map(r=>({...r,cached:true,fetchedAt:r.fetchedAt||fallback}));result.historyMeta[code]={cached:true,fetchedAt:fallback};}
     }
@@ -616,6 +642,9 @@ SOFTWARE.
     for(const q of Object.values(data.quotes||{})){
       if(q?.NAV>0&&validDate(q.PDATE))dates.push(q.PDATE);
       if(q?.GSZ>0&&validTime(q.GZTIME))dates.push(q.GZTIME.slice(0,10));
+    }
+    for (const estimate of Object.values(data.sinaEstimates || {})) {
+      if (estimate?.GSZ > 0 && validTime(estimate.GZTIME)) dates.push(estimate.GZTIME.slice(0,10));
     }
     for(const rows of Object.values(data.history||{}))for(const r of Array.isArray(rows)?rows:[])if(r&&validDate(r.date)&&r.nav>0)dates.push(r.date);
     return dates.filter(d=>d<=today).sort().at(-1)||null;
@@ -628,26 +657,46 @@ SOFTWARE.
     officials.sort((a,b)=>a.date.localeCompare(b.date)||(Number(!a.cached)-Number(!b.cached))||(Date.parse(a.fetchedAt||'')||0)-(Date.parse(b.fetchedAt||'')||0)||(Number(a.source==='history')-Number(b.source==='history')));
     const latest=officials.at(-1)||null;
     let status='unavailable',rate=null,nav=null,date=null,primaryMeta=null;
+    let estimateSource = null, estimateTime = null, baseline = previous;
     if(latest?.date===target){
       nav=latest.nav;date=latest.date;rate=latest.rate;primaryMeta=latest;
       if(day&&Math.abs(day.nav-nav)<1e-9&&finite(day.rate)){rate=day.rate;primaryMeta={...latest,cached:Boolean(latest.cached||historyMeta(day).cached)};}
       status=finite(rate)?'final':'officialWithoutRate';
-    }else if(validTime(q.GZTIME)&&q.GZTIME.slice(0,10)===target&&q.GSZ>0&&finite(q.GSZZL)){status='estimate';rate=q.GSZZL;nav=q.GSZ;date=target;primaryMeta=q._estimateMeta||data.quoteMeta?.[h.code];}
+    } else {
+      const isCurrentEstimate = value => validTime(value?.GZTIME) && value.GZTIME.slice(0,10) === target
+        && value.GSZ > 0 && finite(value.GSZZL);
+      const sina = data.sinaEstimates?.[h.code];
+      const main = isCurrentEstimate(q);
+      const reference = latest?.date < target ? latest : previous;
+      const supplement = !main && isCurrentEstimate(sina) && reference && reference.date === sina.referenceDate
+        && Math.abs(reference.nav - sina.referenceNav) < 1e-9;
+      if (main || supplement) {
+        const estimate = main ? q : sina;
+        status = 'estimate';
+        rate = estimate.GSZZL;
+        nav = estimate.GSZ;
+        date = target;
+        estimateTime = estimate.GZTIME;
+        estimateSource = main ? 'tiantian' : 'sina';
+        primaryMeta = main ? q._estimateMeta || data.quoteMeta?.[h.code] : sina;
+        if (supplement) baseline = reference;
+      }
+    }
     let profit=null,inconsistent=false;
     if(h.shares===0&&(status==='final'||status==='estimate'))profit=0;
-    else if(finite(h.shares)&&h.shares>0&&finite(rate)&&previous?.nav>0){
-      inconsistent=Math.abs((nav/previous.nav-1)*100-rate)>.03;
-      if(!inconsistent)profit=roundMoney(h.shares*(nav-previous.nav));
+    else if(finite(h.shares)&&h.shares>0&&finite(rate)&&baseline?.nav>0){
+      inconsistent=Math.abs((nav/baseline.nav-1)*100-rate)>.03;
+      if(!inconsistent)profit=roundMoney(h.shares*(nav-baseline.nav));
     }
     const cached=primaryMeta?.cached??Boolean(data.fromCache),fetchedAt=primaryMeta?.fetchedAt||null;
     let reason='暂未取得此基金当日可用数据';
     if(!h.code)reason='待补基金代码';
     else if(!finite(h.shares))reason='待补持有份额';
     else if(status==='officialWithoutRate')reason='正式净值已发布，日涨幅尚未返回；暂不采用旧估算';
-    else if((status==='final'||status==='estimate')&&!previous)reason='缺少上一净值日基准';
+    else if((status==='final'||status==='estimate')&&!baseline)reason='缺少上一净值日基准';
     else if(inconsistent)reason='净值变化与公布涨幅不一致，请核对分红、折算及份额';
     else if(cached)reason='显示已保存的行情，请核对数据日期';
-    return {status,rate,nav,date,profit,reason,inconsistent,cached,fetchedAt,quote:q,previous,official:day,history:rows,latest};
+    return {status,rate,nav,date,profit,reason,inconsistent,cached,fetchedAt,quote:q,previous:baseline,official:day,history:rows,latest,estimateSource,estimateTime};
   }
   function sumField(portfolio,key){const v=portfolio.holdings.map(h=>h[key]);return v.length&&v.every(finite)?v.reduce((n,x)=>n+x,0):null;}
   function sumKnown(portfolio,key){const v=portfolio.holdings.map(h=>h[key]).filter(finite);return v.length?v.reduce((a,b)=>a+b,0):null;}
@@ -661,7 +710,7 @@ SOFTWARE.
     const target=latestMarketDate(data,today),results=portfolio.holdings.map(h=>selectResult(h,data,target)),calculable=results.filter(r=>finite(r.profit)),n=results.length,record=reconciliation(portfolio);
     return {target,results,calculable,n,complete:n>0&&calculable.length===n&&!record.incomplete,profit:calculable.length?roundMoney(calculable.reduce((s,r)=>s+r.profit,0)):null,allFinal:calculable.length>0&&calculable.every(r=>r.status==='final'),allAvailableFinal:n>0&&results.every(r=>['final','officialWithoutRate'].includes(r.status)),hasCached:results.some(r=>r.cached&&r.status!=='unavailable'),record};
   }
-    const api={finite,toNumber,validDate,roundMoney,validatePortfolio,parsePortfolioText,normalizeQuote,normalizeHistory,mergeQuote,mergeHistory,sanitizeMarket,latestMarketDate,selectResult,sumField,reconciliation,aggregatePortfolio};
+    const api={finite,toNumber,validDate,roundMoney,validatePortfolio,parsePortfolioText,normalizeQuote,normalizeSinaEstimate,normalizeHistory,mergeQuote,mergeHistory,sanitizeMarket,latestMarketDate,selectResult,sumField,reconciliation,aggregatePortfolio};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   else root.MoneyComeCore=Object.freeze(api);
 })(globalThis);
@@ -700,7 +749,10 @@ SOFTWARE.
     }
     function aggregate(){return Core.aggregatePortfolio(portfolio,data,cstDate());}
     function setNumeric(selector,value,signedValue=false){const e=$(selector);e.textContent=signedValue?signed(value):money(value);e.classList.remove('gain','loss');const c=color(value);if(c&&signedValue)e.classList.add(c);}
-    function estimateLabel(result){return result?.quote?.GZTIME?.slice(11,16)>='15:00'?'收盘估算':'盘中估算';}
+    function estimateLabel(result) {
+      const source = result?.estimateSource === 'sina' ? '新浪' : '';
+      return source + (result?.estimateTime?.slice(11,16) >= '15:00' ? '收盘估算' : '盘中估算');
+    }
     function render() {
       const a=aggregate(), {total,unrecorded:gap}=a.record, sourceLabel=saved?'持仓记录':'截图记录';
       $('#headerDate').textContent=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'short'}).format(new Date());
@@ -750,6 +802,7 @@ SOFTWARE.
 
     }
     const API='https://fundcomapi.tiantianfunds.com';
+    const SINA_ESTIMATE_API = 'https://stock.finance.sina.com.cn/fundInfo/api/openapi.php/FdFundService.getEstimateNetworthPic';
     async function request(path,query){
       const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),8000);
       try{
@@ -759,6 +812,64 @@ SOFTWARE.
         if(!json||json.success===false||json.errorCode)throw Error('数据源暂不可用');
         return json;
       }finally{clearTimeout(timeout);}
+    }
+    function requestSinaInFrame(codes, endpoint) {
+      const pendingCodes = [...codes];
+      function requestNext() {
+        const code = pendingCodes.shift();
+        if (!code) return;
+        const script = document.createElement('script');
+        const callback = 'moneyComeEstimate' + code;
+        let complete = false;
+        function finish(response) {
+          if (complete) return;
+          complete = true;
+          delete window[callback];
+          script.remove();
+          const data = response?.result?.status?.code === 0 ? response.result.data : null;
+          const estimate = data && {worth_date: data.worth_date, worth: data.worth, networth: data.networth};
+          window.parent.postMessage({type: 'money-come-sina-estimate', code, estimate}, '*');
+          requestNext();
+        }
+        window[callback] = finish;
+        script.onload = script.onerror = () => finish(null);
+        script.referrerPolicy = 'no-referrer';
+        script.src = endpoint + '?' + new URLSearchParams({symbol: code, callback});
+        document.head.append(script);
+      }
+      for (let worker = 0; worker < Math.min(codes.length, 5); worker++) requestNext();
+    }
+    function fetchSinaEstimates(codes, today) {
+      if (!codes.length) return Promise.resolve({});
+      return new Promise(resolve => {
+        const frame = document.createElement('iframe');
+        frame.hidden = true;
+        // The callback script runs in an isolated frame without access to the portfolio or storage.
+        frame.setAttribute('sandbox', 'allow-scripts');
+        frame.srcdoc = '<!doctype html><meta charset="utf-8">' +
+          '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\' https://stock.finance.sina.com.cn">' +
+          '<script>(' + requestSinaInFrame.toString() + ')(' + JSON.stringify(codes) + ',' +
+          JSON.stringify(SINA_ESTIMATE_API) + ')</scr' + 'ipt>';
+        const pendingCodes = new Set(codes);
+        const estimates = {};
+        const timeout = setTimeout(finish, 7000);
+        function finish() {
+          clearTimeout(timeout);
+          window.removeEventListener('message', receive);
+          frame.remove();
+          resolve(estimates);
+        }
+        function receive(event) {
+          if (event.source !== frame.contentWindow || event.origin !== 'null') return;
+          const message = event.data;
+          if (message?.type !== 'money-come-sina-estimate' || !pendingCodes.delete(message.code)) return;
+          const estimate = Core.normalizeSinaEstimate(message.estimate, message.code, today);
+          if (estimate) estimates[message.code] = estimate;
+          if (!pendingCodes.size) finish();
+        }
+        window.addEventListener('message', receive);
+        document.body.append(frame);
+      });
     }
     async function fetchOnce(){
       const codes=portfolio.holdings.map(h=>h.code).filter(Boolean),allowed=new Set(codes);
@@ -780,7 +891,17 @@ SOFTWARE.
         }catch{data.errors.push(code);}
       }};
       await Promise.all([quoteTask,...Array.from({length:Math.min(3,codes.length)},worker)]);
-      if(data.hasLive)store(STORE.cache,{version:2,quotes:data.quotes,history:data.history,quoteMeta:data.quoteMeta,historyMeta:data.historyMeta,fetchedAt:data.fetchedAt});
+      const today = cstDate();
+      const mainData = {...data, sinaEstimates: {}};
+      const missing = portfolio.holdings
+        .filter(holding => holding.code && Core.selectResult(holding, mainData, today).status === 'unavailable')
+        .map(holding => holding.code);
+      const estimates = await fetchSinaEstimates(missing, today);
+      for (const [code, estimate] of Object.entries(estimates)) {
+        if (data.sinaEstimates[code]?.GZTIME > estimate.GZTIME) continue;
+        data.sinaEstimates[code] = {...estimate, cached: false, fetchedAt: markLive()};
+      }
+      if(data.hasLive)store(STORE.cache,{version:2,quotes:data.quotes,sinaEstimates:data.sinaEstimates,history:data.history,quoteMeta:data.quoteMeta,historyMeta:data.historyMeta,fetchedAt:data.fetchedAt});
       data.loading=false;render();
     }
 
@@ -820,7 +941,8 @@ SOFTWARE.
     function renderFundRow(h,index,r){
       const cache=r.cached&&r.status!=='unavailable'?'<span class="cache-label">缓存</span>':'';
       let daily='暂未取得当日数据';
-      if(finite(r.profit))daily=`${dateShort(r.date)} ${r.status==='final'?'收益':'预计收益'} <span class="num ${color(r.profit)} sensitive">${signed(r.profit)}</span>`;
+      const dailyLabel = r.status === 'final' ? '收益' : r.estimateSource === 'sina' ? estimateLabel(r) : '预计收益';
+      if(finite(r.profit))daily=`${dateShort(r.date)} ${dailyLabel} <span class="num ${color(r.profit)} sensitive">${signed(r.profit)}</span>`;
       else if(finite(r.rate))daily=`${dateShort(r.date)} ${r.status==='final'?'净值涨幅':estimateLabel(r)} <span class="num ${color(r.rate)}">${r.rate>0?'+':''}${r.rate.toFixed(2)}%</span>`;
       else if(r.status==='officialWithoutRate')daily=`${dateShort(r.date)} 正式净值 ${r.nav.toFixed(4)}`;
       else if(data.loading)daily='正在读取行情…';
