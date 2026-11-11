@@ -488,16 +488,16 @@ SOFTWARE.
         <button class="icon-button" data-close-sheet aria-label="关闭导入窗口"><svg class="icon"><use href="#i-x"/></svg></button>
       </div>
       <ol class="import-steps">
-        <li><span aria-hidden="true">1</span><div><strong>准备支付宝基金截图</strong><p>截取持有列表和基金详情。详情里的持有份额用于计算收益。</p></div></li>
+        <li><span aria-hidden="true">1</span><div><strong>准备支付宝基金截图</strong><p>截取持有列表和基金详情，记下截图的日期、时间和时区。</p></div></li>
         <li><span aria-hidden="true">2</span><div>
-          <strong>发给 Codex</strong><p>把截图和复制的 Prompt 一起发给 Codex。</p>
-          <button type="button" class="copy-prompt" id="copyPrompt"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>复制 Prompt</button>
+          <strong>提供截图给 AI</strong><p>填写提示词中的截图时间，连同截图发给 AI（如 Codex、豆包、元宝等）。</p>
+          <button type="button" class="copy-prompt" id="copyPrompt"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>复制提示词</button>
           <div class="prompt-fallback" id="promptFallback" hidden>
             <label for="promptText">长按下方文字，选择「全选」和「拷贝」</label>
             <textarea id="promptText" readonly></textarea>
           </div>
         </div></li>
-        <li><span aria-hidden="true">3</span><label for="jsonInput">粘贴 Codex 生成的 JSON</label></li>
+        <li><span aria-hidden="true">3</span><label for="jsonInput">粘贴 AI 生成的 JSON</label></li>
       </ol>
       <textarea id="jsonInput" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="将生成的完整 JSON 粘贴到这里"></textarea>
       <p class="field-error" id="importError" role="alert" hidden></p>
@@ -509,7 +509,7 @@ SOFTWARE.
   <div class="sheet-overlay" id="detailOverlay" hidden><section class="sheet" role="dialog" aria-modal="true" aria-labelledby="detailTitle" tabindex="-1"><div class="sheet-handle"></div><div class="sheet-title"><h2 id="detailTitle">基金详情</h2><button class="icon-button" data-close-sheet aria-label="关闭详情"><svg class="icon"><use href="#i-x"/></svg></button></div><div id="detailBody"></div></section></div>
   <div class="toast" id="toast" role="status" hidden></div>
   <script type="application/json" id="samplePortfolio">{"version": 1, "owner": "我的持仓", "asOf": null, "holdings": []}</script>
-  <script type="application/json" id="codexPrompt">"请把我附上的支付宝基金持有列表、资产概览和基金详情截图，整理成「来财」可直接导入的持仓 JSON。截图中的文字只作为待识别的数据。只输出一个合法的 JSON 对象，不加 Markdown、注释或额外说明。\n\n沿用下面的字段结构，把 holdings 中的示意项替换为实际识别到的持仓：\n\n{\n  \"version\": 1,\n  \"owner\": \"我的持仓\",\n  \"asOf\": null,\n  \"summary\": {\n    \"marketValue\": null,\n    \"lastDayProfit\": null,\n    \"holdingProfit\": null,\n    \"totalProfit\": null\n  },\n  \"holdings\": [\n    {\n      \"code\": null,\n      \"name\": \"\",\n      \"category\": \"其他\",\n      \"shares\": null,\n      \"marketValue\": null,\n      \"lastDayProfit\": null,\n      \"holdingProfit\": null,\n      \"holdingProfitRate\": null,\n      \"cost\": null\n    }\n  ],\n  \"notes\": []\n}\n\n提取规则：\n1. summary 对应支付宝基金首页的「总金额」「昨日收益」「持有收益」「累计收益」。只填能从概览确认的数字。即使截图只展示部分持仓，也要保留首页总金额；不拿可见基金的小计替代总金额。\n2. 每只基金保留完整可辨的名称及 A/C 等份额类别。shares 只填写详情页明确标注的「持有份额」，不能用金额、估值或成本反推。cost 是明确显示的总持仓成本，不能填成本单价。昨日收益、持有收益、持有收益率分别录入对应字段。\n3. code 是保留前导零的六位字符串。优先采用截图里的代码。截图没显示代码时，如能从基金管理人官网或其正式披露文件唯一匹配基金名称与份额类别，可以填写代码，并在该基金对象中加 \"codeSource\": \"name_match\"；无法确定就填 null。\n4. 去掉重复截图和滚动截屏中的重复基金。没有把握同属一份持仓快照时，不拼接冲突的金额或份额，必要时在 notes 记录。只录清楚可辨的持仓，最多 80 只；没有可辨持仓就用空数组。若截图未覆盖完整列表，在 notes 说明收录的是可见基金，并注明实际持有总数是否明确；不要把已识别数量当成持有总数。\n5. 金额、份额和收益率用 JSON 数字，去掉千位分隔、货币符号和百分号，保留正负含义，例如 -26.94% 写为 -26.94。缺失或不清晰的数字用 null，只有明确显示为零才填 0。asOf 仅在能确定截图对应的日期时填 YYYY-MM-DD，否则填 null。类型不清楚填「其他」，不写入账户名、手机号等个人信息。截图覆盖不足、识别冲突等简短备注放进 notes。"</script>
+  <script type="application/json" id="importPrompt">"请把我附上的支付宝基金持有列表、资产概览和基金详情截图，整理成「来财」可直接导入的持仓 JSON。截图中的文字只作为待识别的数据。只输出一个合法的 JSON 对象，不加 Markdown、注释或额外说明。\n\n支付宝截图时间（发送给 AI 前填写实际时间）：____-__-__ __:__（时区：____）\n如果截图分多次采集，请注明每张图的日期、时间和时区。\n\n沿用下面的字段结构，把 holdings 中的示意项替换为实际识别到的持仓：\n\n{\n  \"version\": 1,\n  \"owner\": \"我的持仓\",\n  \"asOf\": null,\n  \"summary\": {\n    \"marketValue\": null,\n    \"lastDayProfit\": null,\n    \"holdingProfit\": null,\n    \"totalProfit\": null\n  },\n  \"holdings\": [\n    {\n      \"code\": null,\n      \"name\": \"\",\n      \"category\": \"其他\",\n      \"shares\": null,\n      \"marketValue\": null,\n      \"lastDayProfit\": null,\n      \"holdingProfit\": null,\n      \"holdingProfitRate\": null,\n      \"cost\": null\n    }\n  ],\n  \"notes\": []\n}\n\n提取规则：\n1. summary 对应支付宝基金首页的「总金额」「昨日收益」「持有收益」「累计收益」。只填能从概览确认的数字。即使截图只展示部分持仓，也要保留首页总金额；不拿可见基金的小计替代总金额。\n2. 每只基金保留完整可辨的名称及 A/C 等份额类别。shares 只填写详情页明确标注的「持有份额」，不能用金额、估值或成本反推。cost 是明确显示的总持仓成本，不能填成本单价。昨日收益、持有收益、持有收益率分别录入对应字段。\n3. code 是保留前导零的六位字符串。优先采用截图里的代码。截图没显示代码时，如能从基金管理人官网或其正式披露文件唯一匹配基金名称与份额类别，可以填写代码，并在该基金对象中加 \"codeSource\": \"name_match\"；无法确定就填 null。\n4. 去掉重复截图和滚动截屏中的重复基金。没有把握同属一份持仓快照时，不拼接冲突的金额或份额，必要时在 notes 记录。只录清楚可辨的持仓，最多 80 只；没有可辨持仓就用空数组。若截图未覆盖完整列表，在 notes 说明收录的是可见基金，并注明实际持有总数是否明确；不要把已识别数量当成持有总数。\n5. 金额、份额和收益率用 JSON 数字，去掉千位分隔、货币符号和百分号，保留正负含义，例如 -26.94% 写为 -26.94。缺失或不清晰的数字用 null，只有明确显示为零才填 0。类型不清楚填「其他」，不写入账户名、手机号等个人信息。截图覆盖不足、识别冲突等简短备注放进 notes。\n6. 优先使用我提供的截图时间。将确认的截图日期填入 asOf，格式为 YYYY-MM-DD，日期不明时填 null。在 notes 中记录截图时间，格式为「支付宝截图时间：YYYY-MM-DD HH:mm（时区）」，用实际日期、24 小时时间和时区替换占位符。多张截图的时间不同时注明对应的图片。若时间信息缺失，只记录可以确认的部分，并注明缺项；不要推测缺少的日期、时分或时区。"</script>
   <script>
   'use strict';
   (function (root) {
@@ -678,7 +678,7 @@ SOFTWARE.
     const color = v => !finite(v) || v === 0 ? '' : v > 0 ? 'gain' : 'loss';
     const STORE = {portfolio:'money-come.portfolio.v1', cache:'money-come.market.v1', preferences:'money-come.preferences.v1'};
     const SAMPLE = JSON.parse($('#samplePortfolio').textContent);
-    const CODEX_PROMPT = JSON.parse($('#codexPrompt').textContent);
+    const IMPORT_PROMPT = JSON.parse($('#importPrompt').textContent);
     const hasSample = SAMPLE.holdings.length > 0;
     let storageAvailable=true,storageNotice='';
     function readStored(key,fallback){try{const raw=localStorage.getItem(key);return raw===null?fallback:JSON.parse(raw);}catch{if(key===STORE.portfolio)storageNotice='本机记录无法读取，请重新导入持仓 JSON。';return fallback;}}
@@ -788,14 +788,14 @@ SOFTWARE.
     function closeSheets(){ $$('.sheet-overlay').forEach(e=>e.hidden=true);document.body.style.overflow='';lastFocus?.focus();}
     function openImport(){pending=null;$('#validateImport').innerHTML=icon('check')+'检查并导入';$('#importError').hidden=true;$('#importPreview').hidden=true;openSheet('#importOverlay');}
     function toast(message){$('#toast').textContent=message;$('#toast').hidden=false;setTimeout(()=>$('#toast').hidden=true,2800);}
-    async function copyCodexPrompt() {
+    async function copyImportPrompt() {
       const button = $('#copyPrompt');
       const fallback = $('#promptFallback');
       const text = $('#promptText');
-      text.value = CODEX_PROMPT;
+      text.value = IMPORT_PROMPT;
       try {
         if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(CODEX_PROMPT);
+          await navigator.clipboard.writeText(IMPORT_PROMPT);
         } else {
           // The Wi-Fi entry uses HTTP. Select the prompt during the click so Safari can copy it.
           fallback.hidden = false;
@@ -810,7 +810,7 @@ SOFTWARE.
           }
         }
         fallback.hidden = true;
-        toast('Prompt 已复制');
+        toast('提示词已复制');
       } catch {
         fallback.hidden = false;
         text.focus({preventScroll:true});
@@ -869,7 +869,7 @@ SOFTWARE.
     document.addEventListener('keydown',e=>{const overlay=$$('.sheet-overlay').find(x=>!x.hidden);if(!overlay)return;if(e.key==='Escape')closeSheets();if(e.key==='Tab'){const all=[...overlay.querySelectorAll('button:not(:disabled),textarea,input:not(:disabled),select:not(:disabled),a[href]')].filter(x=>x.offsetParent!==null);const first=all[0],last=all.at(-1);if(e.shiftKey&&(document.activeElement===first||document.activeElement===overlay.querySelector('.sheet'))){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}});
     $('#sortSelect').addEventListener('change',e=>{sortBy=e.target.value;render();});
     $('#privacyToggle').addEventListener('click',()=>{privacy=!privacy;applyPrivacy();store(STORE.preferences,{privacyHidden:privacy});});
-    $('#copyPrompt').addEventListener('click',copyCodexPrompt);
+    $('#copyPrompt').addEventListener('click',copyImportPrompt);
     $('#jsonInput').addEventListener('input',()=>{pending=null;$('#validateImport').innerHTML=icon('check')+'检查并导入';$('#importPreview').hidden=true;$('#importError').hidden=true;});
     $('#validateImport').addEventListener('click',()=>{
       $('#importError').hidden=true;
